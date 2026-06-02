@@ -371,38 +371,97 @@ const readAllStatesFromSupabase = async (): Promise<{ key: string; value: any }[
   }
 };
 
-// Proxy localStorage.setItem to auto-propagate min_eco_ updates to Supabase dynamically
-if (typeof window !== 'undefined' && !(window as any).__localStorageSetItemProxied) {
-  (window as any).__localStorageSetItemProxied = true;
-  const originalSetItem = localStorage.setItem;
-  localStorage.setItem = function (key: string, value: string) {
-    originalSetItem.call(localStorage, key, value);
-    if (key.startsWith('min_eco_') && !(window as any).__isSyncingFromSupabase) {
-      if (![
-        'min_eco_supabase_url',
-        'min_eco_supabase_anon_key',
-        'min_eco_supabase_service_role_key',
-        'min_eco_supabase_bucket_name',
-        'min_eco_supabase_database_schema',
-        'min_eco_admin_login'
-      ].includes(key)) {
-        let parsed: any = value;
-        try {
-          parsed = JSON.parse(value);
-        } catch (e) {}
-        writeStateToSupabase(key, parsed);
-        
-        // Push state dynamically to Central backend JSON database so tourists/guests immediately load changes
-        fetch('/api/store-state', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ key, value: parsed })
-        }).catch(err => console.warn('[StoreStateSync] Central store-state update failed:', err));
-      }
-    }
+// Proxy localStorage to implement clean LocalStorage disablement bypass
+if (typeof window !== 'undefined') {
+  (window as any).__inMemoryCache = (window as any).__inMemoryCache || {};
+
+  const isCredentialsKey = (key: string): boolean => {
+    return [
+      'min_eco_supabase_url',
+      'min_eco_supabase_anon_key',
+      'min_eco_supabase_service_role_key',
+      'min_eco_supabase_bucket_name',
+      'min_eco_supabase_database_schema',
+      'min_eco_mysql_host',
+      'min_eco_mysql_port',
+      'min_eco_mysql_user',
+      'min_eco_mysql_password',
+      'min_eco_mysql_database',
+      'min_eco_mysql_table',
+      'min_eco_mysql_ssl',
+      'min_eco_active_db_provider',
+      'min_eco_admin_login',
+      'min_eco_disable_localstorage'
+    ].includes(key);
   };
+
+  const originalGetItem = localStorage.getItem;
+  const originalSetItem = localStorage.setItem;
+  const originalRemoveItem = localStorage.removeItem;
+
+  const isLocalStorageDisabled = (): boolean => {
+    return originalGetItem.call(localStorage, 'min_eco_disable_localstorage') === 'true';
+  };
+
+  // 1. Proxy setItem
+  if (!(window as any).__localStorageSetItemProxied) {
+    (window as any).__localStorageSetItemProxied = true;
+    
+    localStorage.setItem = function (key: string, value: string) {
+      if (isLocalStorageDisabled() && key.startsWith('min_eco_') && !isCredentialsKey(key)) {
+        // Divert storage purely to in-memory dictionary
+        (window as any).__inMemoryCache[key] = value;
+      } else {
+        originalSetItem.call(localStorage, key, value);
+      }
+
+      // Propagate data keys dynamically to databases & backend store
+      if (key.startsWith('min_eco_') && !(window as any).__isSyncingFromSupabase) {
+        if (!isCredentialsKey(key)) {
+          let parsed: any = value;
+          try {
+            parsed = JSON.parse(value);
+          } catch (e) {}
+          
+          writeStateToSupabase(key, parsed);
+          
+          // Push state dynamically to Central backend database so tourists load changes instantly
+          fetch('/api/store-state', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ key, value: parsed })
+          }).catch(err => console.warn('[StoreStateSync] Central store-state update failed:', err));
+        }
+      }
+    };
+  }
+
+  // 2. Proxy getItem
+  if (!(window as any).__localStorageGetItemProxied) {
+    (window as any).__localStorageGetItemProxied = true;
+    
+    localStorage.getItem = function (key: string): string | null {
+      if (isLocalStorageDisabled() && key.startsWith('min_eco_') && !isCredentialsKey(key)) {
+        return (window as any).__inMemoryCache[key] || null;
+      }
+      return originalGetItem.call(localStorage, key);
+    };
+  }
+
+  // 3. Proxy removeItem
+  if (!(window as any).__localStorageRemoveItemProxied) {
+    (window as any).__localStorageRemoveItemProxied = true;
+    
+    localStorage.removeItem = function (key: string) {
+      if (isLocalStorageDisabled() && key.startsWith('min_eco_') && !isCredentialsKey(key)) {
+        delete (window as any).__inMemoryCache[key];
+      } else {
+        originalRemoveItem.call(localStorage, key);
+      }
+    };
+  }
 }
 
 export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -492,6 +551,18 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // Initialize from LocalStorage or Fallback to pre-populated Initial Data
   useEffect(() => {
     const loadState = async () => {
+      // First, fetch the global database preference and cache status from the Node server
+      try {
+        const prefRes = await fetch('/api/database-provider');
+        const prefData = await prefRes.json();
+        if (prefData && prefData.success) {
+          localStorage.setItem('min_eco_active_db_provider', prefData.provider || 'local-json');
+          localStorage.setItem('min_eco_disable_localstorage', String(prefData.disableLocalStorage));
+        }
+      } catch (err) {
+        console.warn('[StoreContext] Server DB provider context fetch failed:', err);
+      }
+
       // First, fetch centralized configuration keys from backend to update caching dynamically
       try {
         const res = await fetch('/api/store-state');

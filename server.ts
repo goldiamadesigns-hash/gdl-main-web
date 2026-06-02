@@ -69,6 +69,133 @@ async function startServer() {
 
   // API list routed to grab folders/images
   const configPath = path.join(process.cwd(), "supabase_shared_config.json");
+  const mysqlConfigPath = path.join(process.cwd(), "mysql_shared_config.json");
+  const dbProviderConfigPath = path.join(process.cwd(), "db_provider_config.json");
+
+  // Default active database provider & localStorage setup
+  interface DbProviderConfig {
+    provider: 'local-json' | 'supabase' | 'mysql';
+    disableLocalStorage: boolean;
+  }
+
+  app.post("/api/save-database-provider", (req, res) => {
+    try {
+      const { provider, disableLocalStorage } = req.body;
+      const config: DbProviderConfig = { 
+        provider: provider || 'local-json', 
+        disableLocalStorage: !!disableLocalStorage 
+      };
+      fs.writeFileSync(dbProviderConfigPath, JSON.stringify(config, null, 2), "utf-8");
+      res.json({ success: true, message: "Database provider preference persisted on server." });
+    } catch (err: any) {
+      console.error("Error storing DB provider preference:", err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.get("/api/database-provider", (req, res) => {
+    try {
+      if (fs.existsSync(dbProviderConfigPath)) {
+        const raw = fs.readFileSync(dbProviderConfigPath, "utf-8");
+        return res.json({ success: true, ...JSON.parse(raw) });
+      }
+      res.json({ success: true, provider: 'local-json', disableLocalStorage: false });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post("/api/save-mysql-config", (req, res) => {
+    try {
+      const { host, port, user, password, database, table, ssl } = req.body;
+      const config = { host, port, user, password, database, table: table || "goldiama_store", ssl: ssl || "false" };
+      fs.writeFileSync(mysqlConfigPath, JSON.stringify(config, null, 2), "utf-8");
+      res.json({ success: true, message: "MySQL configuration stored on backend successfully." });
+    } catch (err: any) {
+      console.error("Error saving MySQL config:", err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.get("/api/mysql-config", (req, res) => {
+    try {
+      if (fs.existsSync(mysqlConfigPath)) {
+        const raw = fs.readFileSync(mysqlConfigPath, "utf-8");
+        const parsed = JSON.parse(raw);
+        return res.json({
+          success: true,
+          host: parsed.host || "",
+          port: parsed.port || "3306",
+          user: parsed.user || "",
+          password: parsed.password || "",
+          database: parsed.database || "",
+          table: parsed.table || "goldiama_store",
+          ssl: parsed.ssl || "false"
+        });
+      }
+      res.json({
+        success: false,
+        message: "No shared MySQL configuration found on server."
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post("/api/mysql/test-connection", async (req, res) => {
+    try {
+      const { host, port, user, password, database, table, ssl } = req.body;
+      const portNum = Number(port) || 3306;
+      const targetTable = table || "goldiama_store";
+
+      const mysqlPromise = await import("mysql2/promise");
+      let connection;
+      try {
+        connection = await mysqlPromise.createConnection({
+          host: host,
+          port: portNum,
+          user: user,
+          password: password,
+          database: database,
+          ssl: ssl === "true" || ssl === true ? { rejectUnauthorized: false } : undefined,
+          connectTimeout: 5000,
+        });
+      } catch (connErr: any) {
+        return res.json({ 
+          success: false, 
+          error: `Connection Failed: ${connErr.message}. Verify host, port, credentials, or public access.` 
+        });
+      }
+
+      try {
+        // Table initialization verification
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS \`${targetTable}\` (
+            \`key\` VARCHAR(255) PRIMARY KEY,
+            \`value\` LONGTEXT,
+            \`updated_at\` VARCHAR(255)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+
+        // Perform simple check
+        const [rows]: any = await connection.query(`SELECT COUNT(*) as count FROM \`${targetTable}\``);
+        await connection.end();
+
+        return res.json({
+          success: true,
+          message: `Successfully connected to MySQL database! Schema verified. Table "${targetTable}" contains ${rows[0]?.count || 0} active objects.`
+        });
+      } catch (queryErr: any) {
+        await connection.end();
+        return res.json({
+          success: false,
+          error: `Handshake succeeded, but query/table operation failed: ${queryErr.message}`
+        });
+      }
+    } catch (err: any) {
+      res.json({ success: false, error: err.message || "An unexpected error occurred during MySQL handshake." });
+    }
+  });
 
   app.post("/api/save-supabase-config", (req, res) => {
     try {
@@ -446,25 +573,131 @@ async function startServer() {
   // --- CENTRALIZED BACKEND STORE FOR REPLICATING STATE & REMOVING VISITOR LOCALSTORAGE CACHING ---
   const storeStatePath = path.join(process.cwd(), "store_state_db.json");
 
-  app.get("/api/store-state", (req, res) => {
+  // Helper to fetch current active DB provider
+  function getActiveDbProvider(): { provider: string; disableLocalStorage: boolean } {
+    try {
+      if (fs.existsSync(dbProviderConfigPath)) {
+        const config = JSON.parse(fs.readFileSync(dbProviderConfigPath, "utf-8"));
+        return {
+          provider: config.provider || "local-json",
+          disableLocalStorage: !!config.disableLocalStorage
+        };
+      }
+    } catch (e) {
+      console.warn("Error reading db_provider_config.json:", e);
+    }
+    return { provider: "local-json", disableLocalStorage: false };
+  }
+
+  app.get("/api/store-state", async (req, res) => {
+    const { provider } = getActiveDbProvider();
+    
+    // Fallback dictionary
+    let fallbackData: Record<string, any> = {};
     try {
       if (fs.existsSync(storeStatePath)) {
-        const raw = fs.readFileSync(storeStatePath, "utf-8");
-        return res.json({ success: true, data: JSON.parse(raw) });
+        fallbackData = JSON.parse(fs.readFileSync(storeStatePath, "utf-8"));
       }
-      res.json({ success: true, data: {} });
-    } catch (err: any) {
-      console.error("Error loading store state:", err);
-      res.status(500).json({ success: false, error: err.message });
+    } catch (e) {}
+
+    if (provider === "mysql") {
+      try {
+        if (fs.existsSync(mysqlConfigPath)) {
+          const config = JSON.parse(fs.readFileSync(mysqlConfigPath, "utf-8"));
+          if (config.host && config.user && config.database) {
+            const mysqlPromise = await import("mysql2/promise");
+            const connection = await mysqlPromise.createConnection({
+              host: config.host,
+              port: Number(config.port) || 3306,
+              user: config.user,
+              password: config.password,
+              database: config.database,
+              ssl: config.ssl === "true" ? { rejectUnauthorized: false } : undefined,
+              connectTimeout: 5000,
+            });
+
+            const targetTable = config.table || "goldiama_store";
+            // Check if table exists, create if not
+            await connection.query(`
+              CREATE TABLE IF NOT EXISTS \`${targetTable}\` (
+                \`key\` VARCHAR(255) PRIMARY KEY,
+                \`value\` LONGTEXT,
+                \`updated_at\` VARCHAR(255)
+              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            `);
+
+            const [rows]: any = await connection.query(`SELECT \`key\`, \`value\` FROM \`${targetTable}\``);
+            await connection.end();
+
+            const mergedData: Record<string, any> = {};
+            if (Array.isArray(rows)) {
+              for (const r of rows) {
+                let parsedVal = r.value;
+                try {
+                  parsedVal = JSON.parse(r.value);
+                } catch (e) {
+                  // Keep as raw string if JSON parsing falls through
+                }
+                mergedData[r.key] = parsedVal;
+              }
+            }
+
+            console.log(`[StoreStateEngine] Loaded ${Object.keys(mergedData).length} state items from MySQL database.`);
+            return res.json({ success: true, data: mergedData, source: "mysql" });
+          }
+        }
+      } catch (mysqlErr: any) {
+        console.warn("[StoreStateEngine] MySQL fetch fallback triggered:", mysqlErr.message);
+      }
+    } else if (provider === "supabase") {
+      try {
+        if (fs.existsSync(configPath)) {
+          const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+          if (config.url && config.anonKey) {
+            const keyToUse = config.serviceRoleKey || config.anonKey;
+            const endpoint = `${config.url.trim().replace(/\/$/, "")}/rest/v1/goldiama_store?select=key,value`;
+            
+            const response = await fetch(endpoint, {
+              method: 'GET',
+              headers: {
+                'apikey': keyToUse,
+                'Authorization': `Bearer ${keyToUse}`,
+                'Accept': 'application/json'
+              }
+            });
+
+            if (response.ok) {
+              const rows: any = await response.json();
+              const mergedData: Record<string, any> = {};
+              if (Array.isArray(rows)) {
+                for (const r of rows) {
+                  mergedData[r.key] = r.value;
+                }
+              }
+              console.log(`[StoreStateEngine] Loaded ${Object.keys(mergedData).length} state items from Supabase database.`);
+              return res.json({ success: true, data: mergedData, source: "supabase" });
+            } else {
+              console.warn(`[StoreStateEngine] Supabase fetch responded with status ${response.status}`);
+            }
+          }
+        }
+      } catch (supabaseErr: any) {
+        console.warn("[StoreStateEngine] Supabase fetch fallback triggered:", supabaseErr.message);
+      }
     }
+
+    // Default to Local JSON Backup
+    res.json({ success: true, data: fallbackData, source: "local-json" });
   });
 
-  app.post("/api/store-state", (req, res) => {
+  app.post("/api/store-state", async (req, res) => {
     try {
       const { key, value } = req.body;
       if (!key) {
         return res.status(400).json({ success: false, error: "Missing key parameter" });
       }
+
+      // Always save to local fallback JSON backup
       let currentData: Record<string, any> = {};
       if (fs.existsSync(storeStatePath)) {
         try {
@@ -475,6 +708,95 @@ async function startServer() {
       }
       currentData[key] = value;
       fs.writeFileSync(storeStatePath, JSON.stringify(currentData, null, 2), "utf-8");
+
+      const { provider } = getActiveDbProvider();
+
+      if (provider === "mysql") {
+        try {
+          if (fs.existsSync(mysqlConfigPath)) {
+            const config = JSON.parse(fs.readFileSync(mysqlConfigPath, "utf-8"));
+            if (config.host && config.user && config.database) {
+              const mysqlPromise = await import("mysql2/promise");
+              const connection = await mysqlPromise.createConnection({
+                host: config.host,
+                port: Number(config.port) || 3306,
+                user: config.user,
+                password: config.password,
+                database: config.database,
+                ssl: config.ssl === "true" ? { rejectUnauthorized: false } : undefined,
+                connectTimeout: 5000,
+              });
+
+              const targetTable = config.table || "goldiama_store";
+              const strValue = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value);
+              const nowIso = new Date().toISOString();
+
+              await connection.query(`
+                INSERT INTO \`${targetTable}\` (\`key\`, \`value\`, \`updated_at\`)
+                VALUES (?, ?, ?)
+                ON DUPLICATE KEY UPDATE \`value\` = VALUES(\`value\`), \`updated_at\` = VALUES(\`updated_at\`);
+              `, [key, strValue, nowIso]);
+
+              await connection.end();
+              // Return early successfully
+              return res.json({ 
+                success: true, 
+                message: `State [${key}] saved both locally & live to MySQL database.` 
+              });
+            }
+          }
+        } catch (mysqlErr: any) {
+          console.warn("[StoreStateEngine] Saving to MySQL failed:", mysqlErr.message);
+        }
+      } else if (provider === "supabase") {
+        try {
+          if (fs.existsSync(configPath)) {
+            const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+            if (config.url && config.anonKey) {
+              const keyToUse = config.serviceRoleKey || config.anonKey;
+              const endpoint = `${config.url.trim().replace(/\/$/, "")}/rest/v1/goldiama_store`;
+
+              const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                  'apikey': keyToUse,
+                  'Authorization': `Bearer ${keyToUse}`,
+                  'Content-Type': 'application/json',
+                  'Prefer': 'resolution=merge-duplicates, return=representation'
+                },
+                body: JSON.stringify({
+                  key,
+                  value,
+                  updated_at: new Date().toISOString()
+                })
+              });
+
+              if (!response.ok) {
+                // Fallback direct PATCH lookup
+                await fetch(`${endpoint}?key=eq.${key}`, {
+                  method: 'PATCH',
+                  headers: {
+                    'apikey': keyToUse,
+                    'Authorization': `Bearer ${keyToUse}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    value,
+                    updated_at: new Date().toISOString()
+                  })
+                });
+              }
+              return res.json({ 
+                success: true, 
+                message: `State [${key}] saved both locally & live to Supabase.` 
+              });
+            }
+          }
+        } catch (subErr: any) {
+          console.warn("[StoreStateEngine] Saving to Supabase failed:", subErr.message);
+        }
+      }
+
       res.json({ success: true, message: "State synchronized on central backend storage successfully." });
     } catch (err: any) {
       console.error("Error saving store state:", err);

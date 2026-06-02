@@ -745,8 +745,31 @@ export const AdminDashboard: React.FC = () => {
     'kyc',
     'commerce'
   ]);
-  const [settingsSubTab, setSettingsSubTab] = useState<'customisation' | 'profile' | 'notifications' | 'api-integration' | 'supabase'>('profile');
+  const [settingsSubTab, setSettingsSubTab] = useState<'customisation' | 'profile' | 'notifications' | 'api-integration' | 'supabase' | 'mysql'>('profile');
   
+  // MySQL Database Configuration States
+  const [mysqlHost, setMysqlHost] = useState(() => localStorage.getItem('min_eco_mysql_host') || '');
+  const [mysqlPort, setMysqlPort] = useState(() => localStorage.getItem('min_eco_mysql_port') || '3306');
+  const [mysqlUser, setMysqlUser] = useState(() => localStorage.getItem('min_eco_mysql_user') || '');
+  const [mysqlPassword, setMysqlPassword] = useState(() => localStorage.getItem('min_eco_mysql_password') || '');
+  const [mysqlDatabase, setMysqlDatabase] = useState(() => localStorage.getItem('min_eco_mysql_database') || '');
+  const [mysqlTable, setMysqlTable] = useState(() => localStorage.getItem('min_eco_mysql_table') || 'goldiama_store');
+  const [mysqlSsl, setMysqlSsl] = useState(() => localStorage.getItem('min_eco_mysql_ssl') || 'false');
+  
+  const [mysqlConnectionStatus, setMysqlConnectionStatus] = useState<'connected' | 'disconnected' | 'testing' | 'error'>('disconnected');
+  const [mysqlConsoleLogs, setMysqlConsoleLogs] = useState<string[]>(['[System] MySQL Controller online. Provide connection credentials to execute handshake check.']);
+  const [mysqlPing, setMysqlPing] = useState<number | null>(null);
+  const [mysqlLastCheckTime, setMysqlLastCheckTime] = useState<string>('');
+  const [showMysqlPassword, setShowMysqlPassword] = useState(false);
+
+  // Global Active Database Engine & cache settings
+  const [activeDbProvider, setActiveDbProvider] = useState<'local-json' | 'supabase' | 'mysql'>(() => {
+    return (localStorage.getItem('min_eco_active_db_provider') as any) || 'local-json';
+  });
+  const [disableLocalStorage, setDisableLocalStorage] = useState<boolean>(() => {
+    return localStorage.getItem('min_eco_disable_localstorage') === 'true';
+  });
+
   // Supabase Database & File Storage Configurations
   const [supabaseUrl, setSupabaseUrl] = useState(() => localStorage.getItem('min_eco_supabase_url') || '');
   const [supabaseAnonKey, setSupabaseAnonKey] = useState(() => localStorage.getItem('min_eco_supabase_anon_key') || '');
@@ -1538,6 +1561,109 @@ export const AdminDashboard: React.FC = () => {
     }
   }, [supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey, supabaseBucketName, supabaseDatabaseSchema]);
 
+  // Callback to verify MySQL database availability & credentials on the server
+  const verifyMysqlConnection = React.useCallback(async (silent = false) => {
+    setMysqlConnectionStatus('testing');
+    const timestamp = new Date().toLocaleTimeString();
+    
+    if (!silent) {
+      setMysqlConsoleLogs(prev => [
+        ...prev,
+        `[${timestamp}] 🔍 Initiating MySQL connection diagnostic suite...`,
+        `[${timestamp}] 📡 Resolving server bridge port forwarding: ${mysqlHost}:${mysqlPort}...`
+      ]);
+    } else {
+      setMysqlConsoleLogs([
+        `[${timestamp}] 🔍 Automated MySQL verification triggered on system load.`,
+        `[${timestamp}] 📡 Querying MySQL cloud database bridge...`
+      ]);
+    }
+
+    if (!mysqlHost || !mysqlUser || !mysqlDatabase) {
+      setMysqlConnectionStatus('error');
+      setMysqlPing(null);
+      setMysqlConsoleLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] ❌ Handshake failed. Host, User, and Database credentials are all required.`,
+        `[${new Date().toLocaleTimeString()}] ⚠️ Action Required: Input valid MySQL connection settings inside parameters form below.`
+      ]);
+      return;
+    }
+
+    const t0 = performance.now();
+    try {
+      setMysqlConsoleLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] 🪐 Sending secure SQL execution plan to backend API bridge...`
+      ]);
+
+      const res = await fetch('/api/mysql/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: mysqlHost,
+          port: mysqlPort,
+          user: mysqlUser,
+          password: mysqlPassword,
+          database: mysqlDatabase,
+          table: mysqlTable,
+          ssl: mysqlSsl
+        })
+      });
+
+      const data = await res.json();
+      const t1 = performance.now();
+      const latency = Math.floor(t1 - t0);
+      const finalTime = new Date().toLocaleTimeString();
+
+      if (data && data.success) {
+        setMysqlPing(latency);
+        setMysqlLastCheckTime(finalTime);
+        setMysqlConnectionStatus('connected');
+        setMysqlConsoleLogs(prev => [
+          ...prev,
+          `[${finalTime}] 🟢 MySQL API Connection Verified!`,
+          `[${finalTime}] 📦 Database Schema status: OK`,
+          `[${finalTime}] 📜 Server Message: ${data.message}`,
+          `[${finalTime}] ✅ Handshake succeeded in ${latency}ms!`
+        ]);
+
+        // Save verified config to Node.js backend persistent file
+        fetch('/api/save-mysql-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            host: mysqlHost,
+            port: mysqlPort,
+            user: mysqlUser,
+            password: mysqlPassword,
+            database: mysqlDatabase,
+            table: mysqlTable,
+            ssl: mysqlSsl
+          })
+        }).catch(err => console.error("Error saving verified mysql config:", err));
+
+      } else {
+        setMysqlConnectionStatus('error');
+        setMysqlPing(null);
+        setMysqlConsoleLogs(prev => [
+          ...prev,
+          `[${finalTime}] ❌ MySQL Validation Failed.`,
+          `[${finalTime}] ⚠️ Error: ${data.error || 'Check server logs for error details.'}`
+        ]);
+      }
+    } catch (err: any) {
+      const finalTime = new Date().toLocaleTimeString();
+      setMysqlConnectionStatus('error');
+      setMysqlPing(null);
+      setMysqlConsoleLogs(prev => [
+        ...prev,
+        `[${finalTime}] ❌ Handshake execution crashed.`,
+        `[${finalTime}] ⚠️ Stack Trace: ${err.message}`
+      ]);
+    }
+  }, [mysqlHost, mysqlPort, mysqlUser, mysqlPassword, mysqlDatabase, mysqlTable, mysqlSsl]);
+
   // Single media file upload controller with dynamic multi-hosting routing support
   const uploadSingleMediaFile = async (file: File, fileResult: string, folderVal: string) => {
     let sizeStr = `${(file.size / 1024).toFixed(0)} KB`;
@@ -1772,7 +1898,55 @@ export const AdminDashboard: React.FC = () => {
 
   // Run on first component mount
   React.useEffect(() => {
-    const checkAndInitSupabase = async () => {
+    const initDatabasesAndPreferences = async () => {
+      // 1. Fetch server-side DB Provider & LocalStorage disable settings
+      try {
+        const res = await fetch('/api/database-provider');
+        const data = await res.json();
+        if (data && data.success) {
+          setActiveDbProvider(data.provider || 'local-json');
+          setDisableLocalStorage(!!data.disableLocalStorage);
+          localStorage.setItem('min_eco_active_db_provider', data.provider || 'local-json');
+          localStorage.setItem('min_eco_disable_localstorage', String(!!data.disableLocalStorage));
+        }
+      } catch (err) {
+        console.warn('[AdminDashboard] Failed to load server database provider preference:', err);
+      }
+
+      // 2. Preload MySQL Configs from backend
+      if (!localStorage.getItem('min_eco_mysql_host')) {
+        try {
+          const res = await fetch('/api/mysql-config');
+          const data = await res.json();
+          if (data && data.success && data.host) {
+            setMysqlHost(data.host);
+            setMysqlPort(data.port || '3306');
+            setMysqlUser(data.user || '');
+            setMysqlPassword(data.password || '');
+            setMysqlDatabase(data.database || '');
+            setMysqlTable(data.table || 'goldiama_store');
+            setMysqlSsl(data.ssl || 'false');
+
+            localStorage.setItem('min_eco_mysql_host', data.host);
+            localStorage.setItem('min_eco_mysql_port', data.port || '3306');
+            localStorage.setItem('min_eco_mysql_user', data.user || '');
+            localStorage.setItem('min_eco_mysql_password', data.password || '');
+            localStorage.setItem('min_eco_mysql_database', data.database || '');
+            localStorage.setItem('min_eco_mysql_table', data.table || 'goldiama_store');
+            localStorage.setItem('min_eco_mysql_ssl', data.ssl || 'false');
+            
+            setTimeout(() => {
+              verifyMysqlConnection(true);
+            }, 200);
+          }
+        } catch (err) {
+          console.warn('[AdminDashboard] Failed to autoload backend MySQL credentials:', err);
+        }
+      } else {
+        verifyMysqlConnection(true);
+      }
+
+      // 3. Preload Supabase Configs
       if (!localStorage.getItem('min_eco_supabase_url')) {
         try {
           const res = await fetch('/api/supabase-config');
@@ -1791,24 +1965,23 @@ export const AdminDashboard: React.FC = () => {
             setTimeout(() => {
               verifySupabaseConnection(true);
             }, 150);
-            return;
           }
         } catch (err) {
           console.warn('[AdminDashboard] Failed to preload backend Supabase configs:', err);
         }
-      }
-
-      if (localStorage.getItem('min_eco_supabase_url')) {
+      } else {
         verifySupabaseConnection(true);
       }
     };
-    checkAndInitSupabase();
+    initDatabasesAndPreferences();
   }, []);
 
-  // Run when user specifically clicks / switches to the Supabase database tab
+  // Run when user specifically clicks / switches to database tabs
   React.useEffect(() => {
     if (settingsSubTab === 'supabase') {
       verifySupabaseConnection(true);
+    } else if (settingsSubTab === 'mysql') {
+      verifyMysqlConnection(true);
     }
   }, [settingsSubTab]);
 
@@ -9345,6 +9518,17 @@ export const AdminDashboard: React.FC = () => {
               >
                 ⚡ Supabase Config
               </button>
+              <button
+                type="button"
+                onClick={() => setSettingsSubTab('mysql')}
+                className={`flex-1 min-w-[130px] py-1.5 text-xs font-sans font-bold rounded-lg transition-all cursor-pointer text-center ${
+                  settingsSubTab === 'mysql'
+                    ? 'bg-white text-zinc-950 shadow-sm font-semibold border border-zinc-200'
+                    : 'text-zinc-550 hover:text-zinc-950 hover:bg-zinc-50/50'
+                }`}
+              >
+                🐬 MySQL Config
+              </button>
             </div>
 
             {/* Sub-Tab 1: CUSTOMISATION */}
@@ -10628,7 +10812,95 @@ export const AdminDashboard: React.FC = () => {
             {/* Sub-Tab: SUPABASE CONFIGURATION */}
             {settingsSubTab === 'supabase' && (
               <div className="bg-white border border-zinc-200 p-6 rounded-xl hover:border-zinc-950 transition-all duration-350 max-w-3xl animate-fade-in space-y-6 text-left">
-                <div>
+                {/* Global Engine Preferences Widget */}
+                <div className="p-5 bg-zinc-50 border border-[#e4e4e7] rounded-2xl space-y-4 shadow-xs">
+                  <div className="flex justify-between items-center pb-2 border-b border-zinc-200">
+                    <div className="flex items-center gap-2">
+                      <Settings className="w-4 h-4 text-amber-700 animate-spin-slow" />
+                      <span className="text-[11px] font-mono tracking-wider font-extrabold text-amber-800 uppercase">
+                        State Storage Engine Preferences
+                      </span>
+                    </div>
+                    <span className="text-[8px] font-mono font-bold bg-amber-100 text-[#b45309] px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      Shared Preference
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Choose Database Provider */}
+                    <div className="space-y-1.5 text-left">
+                      <label className="font-semibold text-[9.5px] text-zinc-500 uppercase tracking-wider block">
+                        Default Storage Provider Engine *
+                      </label>
+                      <select
+                        value={activeDbProvider}
+                        onChange={(e) => setActiveDbProvider(e.target.value as any)}
+                        className="w-full px-3 py-2 bg-white border border-zinc-300 rounded-xl outline-none focus:border-zinc-950 font-mono text-xs text-zinc-800"
+                      >
+                        <option value="local-json">Local JSON Backup Store (store_state_db.json)</option>
+                        <option value="supabase">Supabase Serverless REST API</option>
+                        <option value="mysql">MySQL Core Database Pool</option>
+                      </select>
+                      <p className="text-[9px] text-zinc-450 leading-tight">
+                        Choose the primary storage database where the shop's operational states survive securely.
+                      </p>
+                    </div>
+
+                    {/* Disable LocalStorage Caching */}
+                    <div className="space-y-1.5 text-left flex flex-col justify-center">
+                      <div className="flex items-center gap-2.5">
+                        <input
+                          type="checkbox"
+                          id="disableLocalStorageCheckSupa"
+                          checked={disableLocalStorage}
+                          onChange={(e) => setDisableLocalStorage(e.target.checked)}
+                          className="w-4 h-4 rounded border-zinc-300 text-zinc-950 focus:ring-zinc-900 cursor-pointer"
+                        />
+                        <label htmlFor="disableLocalStorageCheckSupa" className="font-semibold text-xs text-zinc-900 uppercase tracking-wide block cursor-pointer">
+                          Disable Client LocalStorage
+                        </label>
+                      </div>
+                      <p className="text-[9px] text-zinc-550 leading-relaxed pl-6">
+                        Eliminate browser-side caching entirely to route all active views/catalogues securely and in real-time through the cloud.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Save Provider Choice */}
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const res = await fetch('/api/save-database-provider', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              provider: activeDbProvider,
+                              disableLocalStorage: disableLocalStorage
+                            })
+                          });
+                          const data = await res.json();
+                          if (data && data.success) {
+                            localStorage.setItem('min_eco_active_db_provider', activeDbProvider);
+                            localStorage.setItem('min_eco_disable_localstorage', String(disableLocalStorage));
+                            alert(`Preferences successfully stored! Active storage engine set to "${activeDbProvider.toUpperCase()}" with LocalStorage bypass set to: ${disableLocalStorage ? "ACTIVE" : "INACTIVE"}. Reloading configuration...`);
+                            window.location.reload();
+                          } else {
+                            alert("Failed to persist engine options: " + (data.error || "Unknown error"));
+                          }
+                        } catch (e: any) {
+                          alert("Failed to submit configurations to endpoint: " + e.message);
+                        }
+                      }}
+                      className="px-4 py-2 bg-zinc-900 text-white font-mono text-[9.5px] font-bold uppercase tracking-wider rounded-xl hover:bg-zinc-800 transition-all cursor-pointer shadow-xs flex items-center gap-1.5"
+                    >
+                      <span>💾 Persist preferences on DB server</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-zinc-100">
                   <h3 className="text-sm font-sans font-bold uppercase text-zinc-900 flex items-center gap-2 border-b border-zinc-100 pb-2">
                     <Database className="w-4 h-4 text-zinc-500 shrink-0" />
                     Supabase Cloud Sync Engine Setup
@@ -10932,6 +11204,366 @@ export const AdminDashboard: React.FC = () => {
                     onClick={() => {
                       verifySupabaseConnection(false);
                       alert("Connecting to Supabase endpoint... See live socket logs below.");
+                    }}
+                    className="flex-1 bg-zinc-950 hover:bg-zinc-850 text-white font-mono font-bold py-3 rounded-xl text-xs uppercase tracking-wider cursor-pointer transition-all flex items-center justify-center gap-2"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    SAVE CREDENTIALS & RUN LIVE HARNESS
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Sub-Tab: MYSQL CONFIGURATION */}
+            {settingsSubTab === 'mysql' && (
+              <div className="bg-white border border-zinc-200 p-6 rounded-xl hover:border-zinc-950 transition-all duration-350 max-w-3xl animate-fade-in space-y-6 text-left">
+                {/* Global Engine Preferences Widget */}
+                <div className="p-5 bg-zinc-50 border border-[#e4e4e7] rounded-2xl space-y-4 shadow-xs">
+                  <div className="flex justify-between items-center pb-2 border-b border-zinc-200">
+                    <div className="flex items-center gap-2">
+                      <Settings className="w-4 h-4 text-emerald-700 animate-spin-slow" />
+                      <span className="text-[11px] font-mono tracking-wider font-extrabold text-emerald-800 uppercase">
+                        State Storage Engine Preferences
+                      </span>
+                    </div>
+                    <span className="text-[8px] font-mono font-bold bg-emerald-100 text-[#047857] px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      Shared Preference
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Choose Database Provider */}
+                    <div className="space-y-1.5 text-left">
+                      <label className="font-semibold text-[9.5px] text-zinc-500 uppercase tracking-wider block">
+                        Default Storage Provider Engine *
+                      </label>
+                      <select
+                        value={activeDbProvider}
+                        onChange={(e) => setActiveDbProvider(e.target.value as any)}
+                        className="w-full px-3 py-2 bg-white border border-zinc-300 rounded-xl outline-none focus:border-zinc-950 font-mono text-xs text-zinc-800"
+                      >
+                        <option value="local-json">Local JSON Backup Store (store_state_db.json)</option>
+                        <option value="supabase">Supabase Serverless REST API</option>
+                        <option value="mysql">MySQL Core Database Pool</option>
+                      </select>
+                      <p className="text-[9px] text-zinc-450 leading-tight">
+                        Choose the primary storage database where the shop's operational states survive securely.
+                      </p>
+                    </div>
+
+                    {/* Disable LocalStorage Caching */}
+                    <div className="space-y-1.5 text-left flex flex-col justify-center">
+                      <div className="flex items-center gap-2.5">
+                        <input
+                          type="checkbox"
+                          id="disableLocalStorageCheckMysql"
+                          checked={disableLocalStorage}
+                          onChange={(e) => setDisableLocalStorage(e.target.checked)}
+                          className="w-4 h-4 rounded border-zinc-300 text-zinc-950 focus:ring-zinc-900 cursor-pointer"
+                        />
+                        <label htmlFor="disableLocalStorageCheckMysql" className="font-semibold text-xs text-zinc-900 uppercase tracking-wide block cursor-pointer">
+                          Disable Client LocalStorage
+                        </label>
+                      </div>
+                      <p className="text-[9px] text-zinc-550 leading-relaxed pl-6">
+                        Eliminate browser-side caching entirely to route all active views/catalogues securely and in real-time through the cloud.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Save Provider Choice */}
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const res = await fetch('/api/save-database-provider', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              provider: activeDbProvider,
+                              disableLocalStorage: disableLocalStorage
+                            })
+                          });
+                          const data = await res.json();
+                          if (data && data.success) {
+                            localStorage.setItem('min_eco_active_db_provider', activeDbProvider);
+                            localStorage.setItem('min_eco_disable_localstorage', String(disableLocalStorage));
+                            alert(`Preferences successfully stored! Active storage engine set to "${activeDbProvider.toUpperCase()}" with LocalStorage bypass set to: ${disableLocalStorage ? "ACTIVE" : "INACTIVE"}. Reloading configuration...`);
+                            window.location.reload();
+                          } else {
+                            alert("Failed to persist engine options: " + (data.error || "Unknown error"));
+                          }
+                        } catch (e: any) {
+                          alert("Failed to submit configurations to endpoint: " + e.message);
+                        }
+                      }}
+                      className="px-4 py-2 bg-zinc-900 text-white font-mono text-[9.5px] font-bold uppercase tracking-wider rounded-xl hover:bg-zinc-800 transition-all cursor-pointer shadow-xs flex items-center gap-1.5"
+                    >
+                      <span>💾 Persist preferences on DB server</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* MySQL configuration card */}
+                <div className="pt-4 border-t border-zinc-100">
+                  <h3 className="text-sm font-sans font-bold uppercase text-zinc-900 flex items-center gap-2 border-b border-zinc-100 pb-2">
+                    <Database className="w-4 h-4 text-zinc-500 shrink-0" />
+                    MySQL Database Connection Pool Setup
+                  </h3>
+                  <p className="text-zinc-500 text-[11px] font-sans pt-1">
+                    Configure high-throughput MySQL database connection pool to persistent relational schema storage:
+                  </p>
+                </div>
+
+                {/* Live Connection Diagnostics Panel */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Status Indicator Card */}
+                  <div className="p-4 bg-zinc-50 border border-zinc-250/80 rounded-xl flex items-center justify-between">
+                    <div className="space-y-1">
+                      <span className="text-[9px] font-mono font-bold text-zinc-400 uppercase tracking-wider block">Live MySQL Status</span>
+                      <div className="flex items-center gap-2">
+                        {mysqlConnectionStatus === 'testing' && (
+                          <span className="flex h-3 w-3 relative">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+                          </span>
+                        )}
+                        {mysqlConnectionStatus === 'connected' && (
+                          <span className="flex h-3 w-3 relative">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                          </span>
+                        )}
+                        {mysqlConnectionStatus === 'error' && (
+                          <span className="flex h-3 w-3 relative">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-3 w-3 bg-rose-500"></span>
+                          </span>
+                        )}
+                        {mysqlConnectionStatus === 'disconnected' && (
+                          <span className="inline-block rounded-full h-3 w-3 bg-zinc-300" />
+                        )}
+                        <span className="text-xs font-sans font-bold text-zinc-800 capitalize select-none">
+                          {mysqlConnectionStatus}
+                        </span>
+                      </div>
+                    </div>
+                    {mysqlPing !== null && (
+                      <div className="text-right">
+                        <span className="text-[9px] font-mono font-bold text-zinc-400 uppercase tracking-wider block">Latency Response</span>
+                        <span className="text-xs font-mono font-bold text-emerald-600">{mysqlPing} ms</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Verification Timestamp Card */}
+                  <div className="p-4 bg-zinc-50 border border-zinc-250/80 rounded-xl flex items-center justify-between">
+                    <div className="space-y-1">
+                      <span className="text-[9px] font-mono font-bold text-zinc-400 uppercase tracking-wider block">Last Server Validation</span>
+                      <span className="text-xs font-sans text-zinc-700 font-medium">
+                        {mysqlLastCheckTime ? mysqlLastCheckTime : 'No Handshake Tested Yet'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* MySQL Parameters Input Section */}
+                <div className="p-5 bg-zinc-50 border border-[#e4e4e7] rounded-2xl space-y-4">
+                  <span className="text-[10px] font-mono font-extrabold text-[#111827] uppercase tracking-wider block border-b border-zinc-200 pb-1.5">
+                    ⚙️ Connector Credentials & Pool Configuration Options
+                  </span>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[10px] text-zinc-500 uppercase tracking-wider block">Database Server Host IP or Alias *</label>
+                      <input
+                        type="text"
+                        value={mysqlHost}
+                        onChange={(e) => {
+                          setMysqlHost(e.target.value);
+                          localStorage.setItem('min_eco_mysql_host', e.target.value);
+                        }}
+                        placeholder="127.0.0.1"
+                        className="w-full px-3 py-2 bg-[#FAF9F9] border border-zinc-250 rounded-xl outline-none focus:border-zinc-950 font-mono text-xs text-zinc-850"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[10px] text-zinc-500 uppercase tracking-wider block">Database Listener TCP Port *</label>
+                      <input
+                        type="text"
+                        value={mysqlPort}
+                        onChange={(e) => {
+                          setMysqlPort(e.target.value);
+                          localStorage.setItem('min_eco_mysql_port', e.target.value);
+                        }}
+                        placeholder="3306"
+                        className="w-full px-3 py-2 bg-[#FAF9F9] border border-zinc-250 rounded-xl outline-none focus:border-zinc-950 font-mono text-xs text-zinc-850"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[10px] text-zinc-500 uppercase tracking-wider block">Database Username *</label>
+                      <input
+                        type="text"
+                        value={mysqlUser}
+                        onChange={(e) => {
+                          setMysqlUser(e.target.value);
+                          localStorage.setItem('min_eco_mysql_user', e.target.value);
+                        }}
+                        placeholder="root"
+                        className="w-full px-3 py-2 bg-[#FAF9F9] border border-zinc-250 rounded-xl outline-none focus:border-zinc-950 font-mono text-xs text-zinc-850"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[10px] text-zinc-500 uppercase tracking-wider block">Database Password</label>
+                      <div className="relative">
+                        <input
+                          type={showMysqlPassword ? 'text' : 'password'}
+                          value={mysqlPassword}
+                          onChange={(e) => {
+                            setMysqlPassword(e.target.value);
+                            localStorage.setItem('min_eco_mysql_password', e.target.value);
+                          }}
+                          placeholder="****************"
+                          className="w-full pl-3 pr-10 py-2 bg-[#FAF9F9] border border-zinc-250 rounded-xl outline-none focus:border-zinc-950 font-mono text-xs text-zinc-850"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowMysqlPassword(!showMysqlPassword)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-zinc-400 hover:text-zinc-800 transition-colors cursor-pointer"
+                        >
+                          <span className="text-[10px] font-mono leading-none">
+                            {showMysqlPassword ? 'HIDE' : 'SHOW'}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[10px] text-zinc-500 uppercase tracking-wider block">Database Name *</label>
+                      <input
+                        type="text"
+                        value={mysqlDatabase}
+                        onChange={(e) => {
+                          setMysqlDatabase(e.target.value);
+                          localStorage.setItem('min_eco_mysql_database', e.target.value);
+                        }}
+                        placeholder="goldiama_db"
+                        className="w-full px-3 py-2 bg-[#FAF9F9] border border-zinc-250 rounded-xl outline-none focus:border-zinc-950 font-mono text-xs text-zinc-850"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[10px] text-zinc-500 uppercase tracking-wider block">State Storage Table *</label>
+                      <input
+                        type="text"
+                        value={mysqlTable}
+                        onChange={(e) => {
+                          setMysqlTable(e.target.value);
+                          localStorage.setItem('min_eco_mysql_table', e.target.value);
+                        }}
+                        placeholder="goldiama_store"
+                        className="w-full px-3 py-2 bg-[#FAF9F9] border border-zinc-250 rounded-xl outline-none focus:border-zinc-950 font-mono text-xs text-zinc-850"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-semibold text-[10px] text-zinc-500 uppercase tracking-wider block">Ssl Encryption Handshake *</label>
+                    <select
+                      value={mysqlSsl}
+                      onChange={(e) => {
+                        setMysqlSsl(e.target.value);
+                        localStorage.setItem('min_eco_mysql_ssl', e.target.value);
+                      }}
+                      className="w-full px-3 py-2 bg-[#FAF9F9] border border-zinc-250 rounded-xl outline-none focus:border-zinc-950 font-mono text-xs text-zinc-850"
+                    >
+                      <option value="false">Disabled (No-SSL Connection Pool, Non-encrypted)</option>
+                      <option value="true">Required (Requires TLS secure server envelope)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Simulated Console Logs Monitor */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-[10px] text-zinc-500 uppercase tracking-wider block">💻 MySQL Connection Verification Console Output & Logs</span>
+                    <button
+                      type="button"
+                      onClick={() => setMysqlConsoleLogs([`[${new Date().toLocaleTimeString()}] [System] Manual logs buffer reset.`])}
+                      className="text-[9px] font-mono text-zinc-400 hover:text-rose-600 transition-colors uppercase font-bold cursor-pointer"
+                    >
+                      CLEAR METRIC LOGS
+                    </button>
+                  </div>
+                  <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl font-mono text-[10px] text-emerald-400 space-y-1 h-36 overflow-y-auto leading-relaxed shadow-inner">
+                    {mysqlConsoleLogs.map((log, idx) => (
+                      <div key={idx} className="whitespace-pre-wrap">
+                        {log}
+                      </div>
+                    ))}
+                    <div className="animate-pulse inline-block w-1.5 h-3 bg-emerald-400 align-middle ml-0.5" />
+                  </div>
+                </div>
+
+                <div className="pt-2 flex flex-col sm:flex-row gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm("Purge MySQL Server credentials from local persistent storage?")) {
+                        setMysqlHost('');
+                        setMysqlPort('3306');
+                        setMysqlUser('');
+                        setMysqlPassword('');
+                        setMysqlDatabase('');
+                        setMysqlTable('goldiama_store');
+                        setMysqlSsl('false');
+                        setMysqlConnectionStatus('disconnected');
+                        setMysqlPing(null);
+                        setMysqlConsoleLogs(['[System] Credentials wiped. Interface disconnected.']);
+                        localStorage.removeItem('min_eco_mysql_host');
+                        localStorage.removeItem('min_eco_mysql_port');
+                        localStorage.removeItem('min_eco_mysql_user');
+                        localStorage.removeItem('min_eco_mysql_password');
+                        localStorage.removeItem('min_eco_mysql_database');
+                        localStorage.removeItem('min_eco_mysql_table');
+                        localStorage.removeItem('min_eco_mysql_ssl');
+                        
+                        // Clear backend config
+                        fetch('/api/save-mysql-config', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            host: '',
+                            port: '3306',
+                            user: '',
+                            password: '',
+                            database: '',
+                            table: 'goldiama_store',
+                            ssl: 'false'
+                          })
+                        }).catch(err => console.error(err));
+
+                        alert("MySQL connection credentials deleted cleanly.");
+                      }
+                    }}
+                    className="flex-1 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-sans font-bold py-3 rounded-xl text-xs uppercase tracking-wider cursor-pointer transition-all text-center"
+                  >
+                    Wipe Credentials
+                  </button>
+                  
+                  <button
+                    type="button"
+                    onClick={() => {
+                      verifyMysqlConnection(false);
+                      alert("Connecting to MySQL endpoint... See live socket logs below.");
                     }}
                     className="flex-1 bg-zinc-950 hover:bg-zinc-850 text-white font-mono font-bold py-3 rounded-xl text-xs uppercase tracking-wider cursor-pointer transition-all flex items-center justify-center gap-2"
                   >
