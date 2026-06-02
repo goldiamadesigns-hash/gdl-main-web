@@ -391,6 +391,15 @@ if (typeof window !== 'undefined' && !(window as any).__localStorageSetItemProxi
           parsed = JSON.parse(value);
         } catch (e) {}
         writeStateToSupabase(key, parsed);
+        
+        // Push state dynamically to Central backend JSON database so tourists/guests immediately load changes
+        fetch('/api/store-state', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ key, value: parsed })
+        }).catch(err => console.warn('[StoreStateSync] Central store-state update failed:', err));
       }
     }
   };
@@ -482,63 +491,133 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Initialize from LocalStorage or Fallback to pre-populated Initial Data
   useEffect(() => {
-    const savedProducts = localStorage.getItem('min_eco_products');
-    const savedOrders = localStorage.getItem('min_eco_orders');
-    const savedCustomers = localStorage.getItem('min_eco_customers');
-    const savedLogin = localStorage.getItem('min_eco_admin_login');
+    const loadState = async () => {
+      // First, fetch centralized configuration keys from backend to update caching dynamically
+      try {
+        const res = await fetch('/api/store-state');
+        const result = await res.json();
+        if (result && result.success && result.data && Object.keys(result.data).length > 0) {
+          console.log('[StoreContext] Loaded active store state from Node.js backend. Bypassing client-side caching.');
+          (window as any).__isSyncingFromSupabase = true; // prevent infinite loops back-writing
+          
+          const rawData = result.data;
+          // Apply keys list to localStorage
+          for (const key of Object.keys(rawData)) {
+            const val = rawData[key];
+            const strVal = (typeof val === 'object' && val !== null) ? JSON.stringify(val) : String(val);
+            localStorage.setItem(key, strVal);
+          }
+          (window as any).__isSyncingFromSupabase = false;
+        }
+      } catch (err) {
+        console.warn('[StoreContext] Server store state read warning:', err);
+      }
 
-    if (savedProducts) {
-      setProducts(JSON.parse(savedProducts));
-    } else {
-      setProducts(INITIAL_PRODUCTS);
-      localStorage.setItem('min_eco_products', JSON.stringify(INITIAL_PRODUCTS));
-    }
+      // Initialize states from synchronized localStorage
+      const savedProducts = localStorage.getItem('min_eco_products');
+      const savedOrders = localStorage.getItem('min_eco_orders');
+      const savedCustomers = localStorage.getItem('min_eco_customers');
+      const savedLogin = localStorage.getItem('min_eco_admin_login');
 
-    if (savedOrders) {
-      setOrders(JSON.parse(savedOrders));
-    } else {
-      setOrders(INITIAL_ORDERS);
-      localStorage.setItem('min_eco_orders', JSON.stringify(INITIAL_ORDERS));
-    }
+      if (savedProducts) {
+        setProducts(JSON.parse(savedProducts));
+      } else {
+        setProducts(INITIAL_PRODUCTS);
+        localStorage.setItem('min_eco_products', JSON.stringify(INITIAL_PRODUCTS));
+      }
 
-    if (savedCustomers) {
-      setCustomers(JSON.parse(savedCustomers));
-    } else {
-      setCustomers(INITIAL_CUSTOMERS);
-      localStorage.setItem('min_eco_customers', JSON.stringify(INITIAL_CUSTOMERS));
-    }
+      if (savedOrders) {
+        setOrders(JSON.parse(savedOrders));
+      } else {
+        setOrders(INITIAL_ORDERS);
+        localStorage.setItem('min_eco_orders', JSON.stringify(INITIAL_ORDERS));
+      }
 
-    if (savedLogin === 'true') {
-      setIsAdminLoggedIn(true);
-    }
+      if (savedCustomers) {
+        setCustomers(JSON.parse(savedCustomers));
+      } else {
+        setCustomers(INITIAL_CUSTOMERS);
+        localStorage.setItem('min_eco_customers', JSON.stringify(INITIAL_CUSTOMERS));
+      }
 
-    const savedHeaderStyle = localStorage.getItem('min_eco_header_style');
-    const savedNavMenu = localStorage.getItem('min_eco_nav_menu');
+      if (savedLogin === 'true') {
+        setIsAdminLoggedIn(true);
+      }
 
-    if (savedHeaderStyle === 'minimal' || savedHeaderStyle === 'goldiama') {
-      setHeaderStyleState(savedHeaderStyle);
-    } else {
-      setHeaderStyleState('goldiama');
-      localStorage.setItem('min_eco_header_style', 'goldiama');
-    }
+      const savedHeaderStyle = localStorage.getItem('min_eco_header_style');
+      const savedNavMenu = localStorage.getItem('min_eco_nav_menu');
 
-    if (savedNavMenu) {
-      setNavigationMenuState(JSON.parse(savedNavMenu));
-    } else {
-      setNavigationMenuState(DEFAULT_NAVIGATION_MENU);
-      localStorage.setItem('min_eco_nav_menu', JSON.stringify(DEFAULT_NAVIGATION_MENU));
-    }
+      if (savedHeaderStyle === 'minimal' || savedHeaderStyle === 'goldiama') {
+        setHeaderStyleState(savedHeaderStyle);
+      } else {
+        setHeaderStyleState('goldiama');
+        localStorage.setItem('min_eco_header_style', 'goldiama');
+      }
 
-    setNavPresetStyleState(localStorage.getItem('min_eco_nav_preset_style') || 'underlined');
-    setNavFontSizeState(localStorage.getItem('min_eco_nav_font_size') || 'xs');
-    setNavFontFamilyState(localStorage.getItem('min_eco_nav_font_family') || 'sans');
-    setNavFontWeightState(localStorage.getItem('min_eco_nav_font_weight') || 'bold');
-    setNavFontCaseState(localStorage.getItem('min_eco_nav_font_case') || 'uppercase');
-    setNavLineGapState(localStorage.getItem('min_eco_nav_line_gap') || 'medium');
-    setNavBlockSpacingState(localStorage.getItem('min_eco_nav_block_spacing') || 'medium');
-    setNavColorStyleState(localStorage.getItem('min_eco_nav_color_style') || 'amber');
-    setNavShowDividersState(localStorage.getItem('min_eco_nav_show_dividers') === 'true');
-    setNavStretchMenuState(localStorage.getItem('min_eco_nav_stretch_menu') === 'true');
+      if (savedNavMenu) {
+        setNavigationMenuState(JSON.parse(savedNavMenu));
+      } else {
+        setNavigationMenuState(DEFAULT_NAVIGATION_MENU);
+        localStorage.setItem('min_eco_nav_menu', JSON.stringify(DEFAULT_NAVIGATION_MENU));
+      }
+
+      setNavPresetStyleState(localStorage.getItem('min_eco_nav_preset_style') || 'underlined');
+      setNavFontSizeState(localStorage.getItem('min_eco_nav_font_size') || 'xs');
+      setNavFontFamilyState(localStorage.getItem('min_eco_nav_font_family') || 'sans');
+      setNavFontWeightState(localStorage.getItem('min_eco_nav_font_weight') || 'bold');
+      setNavFontCaseState(localStorage.getItem('min_eco_nav_font_case') || 'uppercase');
+      setNavLineGapState(localStorage.getItem('min_eco_nav_line_gap') || 'medium');
+      setNavBlockSpacingState(localStorage.getItem('min_eco_nav_block_spacing') || 'medium');
+      setNavColorStyleState(localStorage.getItem('min_eco_nav_color_style') || 'amber');
+      setNavShowDividersState(localStorage.getItem('min_eco_nav_show_dividers') === 'true');
+      setNavStretchMenuState(localStorage.getItem('min_eco_nav_stretch_menu') === 'true');
+
+      setHeroBannerShowState(localStorage.getItem('min_eco_hero_banner_show') !== 'false');
+      setHeroBannerTitleState(localStorage.getItem('min_eco_hero_banner_title') || 'Architectural elements designed to silence workspace friction.');
+      setHeroBannerSubtitleState(localStorage.getItem('min_eco_hero_banner_subtitle') || 'Eliminate operational noise with tactile mechanical hardware, single-point diffuse brass illuminations, and structured heavy biofelt linings.');
+      setHeroBannerBgUrlState(localStorage.getItem('min_eco_hero_banner_bg_url') || '');
+      setHeroBannerOverlayState(parseFloat(localStorage.getItem('min_eco_hero_banner_overlay') || '0'));
+      setHeroBannerHeightState(localStorage.getItem('min_eco_hero_banner_height') || 'medium');
+      setHeroBannerCtaTextState(localStorage.getItem('min_eco_hero_banner_cta_text') || 'EXPLORE COLLECTIONS');
+      setHeroBannerCtaLinkState(localStorage.getItem('min_eco_hero_banner_cta_link') || '#');
+      setHeroBannerLayoutModeState(localStorage.getItem('min_eco_hero_banner_layout_mode') || 'full-width');
+      setHeroBannerDimDesktopState(localStorage.getItem('min_eco_hero_banner_dim_desktop') || 'default');
+      setHeroBannerDimTabletState(localStorage.getItem('min_eco_hero_banner_dim_tablet') || 'default');
+      setHeroBannerDimMobileState(localStorage.getItem('min_eco_hero_banner_dim_mobile') || 'default');
+
+      setPageBannerShowState(localStorage.getItem('min_eco_page_banner_show') !== 'false');
+      setPageBannerBgUrlState(localStorage.getItem('min_eco_page_banner_bg_url') || 'https://images.unsplash.com/photo-1493934558415-9d19f0b2b4d2?auto=format&fit=crop&w=1600&q=80');
+      setPageBannerHeightState(localStorage.getItem('min_eco_page_banner_height') || 'snug');
+      setPageBannerAlignState(localStorage.getItem('min_eco_page_banner_align') || 'center');
+      setPageBannerDimDesktopState(localStorage.getItem('min_eco_page_banner_dim_desktop') || 'default');
+      setPageBannerDimTabletState(localStorage.getItem('min_eco_page_banner_dim_tablet') || 'default');
+      setPageBannerDimMobileState(localStorage.getItem('min_eco_page_banner_dim_mobile') || 'default');
+
+      setPageTitleBarEnableState(localStorage.getItem('min_eco_page_title_bar_enable') !== 'false');
+      setPageTitleBarBgState(localStorage.getItem('min_eco_page_title_bar_bg') || 'slate');
+      setPageTitleBarBorderState(localStorage.getItem('min_eco_page_title_bar_border') || 'minimal');
+      setPageTitleBarFontSizeState(localStorage.getItem('min_eco_page_title_bar_font_size') || 'md');
+
+      setLayoutContentWidthState(localStorage.getItem('min_eco_layout_content_width') || 'default');
+      setLayoutBorderRadiusState(localStorage.getItem('min_eco_layout_border_radius') || 'rounded');
+      setLayoutShowBreadcrumbsState(localStorage.getItem('min_eco_layout_show_breadcrumbs') !== 'false');
+
+      const savedPages = localStorage.getItem('min_eco_custom_pages_list');
+      if (savedPages) {
+        try { setPagesList(JSON.parse(savedPages)); } catch (e) {}
+      }
+      const savedBannersList = localStorage.getItem('min_eco_hero_banners_list');
+      if (savedBannersList) {
+        try { setHeroBannersState(JSON.parse(savedBannersList)); } catch (e) {}
+      }
+
+      // Fire events
+      window.dispatchEvent(new Event('min-eco-banners-updated'));
+      window.dispatchEvent(new Event('min-eco-pages-updated'));
+      window.dispatchEvent(new Event('min-eco-logo-updated'));
+    };
+
+    loadState();
   }, []);
 
   // Post-mount Supabase master relational JSON database pulling and seeding sync suite

@@ -443,6 +443,45 @@ async function startServer() {
     }
   });
 
+  // --- CENTRALIZED BACKEND STORE FOR REPLICATING STATE & REMOVING VISITOR LOCALSTORAGE CACHING ---
+  const storeStatePath = path.join(process.cwd(), "store_state_db.json");
+
+  app.get("/api/store-state", (req, res) => {
+    try {
+      if (fs.existsSync(storeStatePath)) {
+        const raw = fs.readFileSync(storeStatePath, "utf-8");
+        return res.json({ success: true, data: JSON.parse(raw) });
+      }
+      res.json({ success: true, data: {} });
+    } catch (err: any) {
+      console.error("Error loading store state:", err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post("/api/store-state", (req, res) => {
+    try {
+      const { key, value } = req.body;
+      if (!key) {
+        return res.status(400).json({ success: false, error: "Missing key parameter" });
+      }
+      let currentData: Record<string, any> = {};
+      if (fs.existsSync(storeStatePath)) {
+        try {
+          currentData = JSON.parse(fs.readFileSync(storeStatePath, "utf-8"));
+        } catch (e) {
+          currentData = {};
+        }
+      }
+      currentData[key] = value;
+      fs.writeFileSync(storeStatePath, JSON.stringify(currentData, null, 2), "utf-8");
+      res.json({ success: true, message: "State synchronized on central backend storage successfully." });
+    } catch (err: any) {
+      console.error("Error saving store state:", err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   // Serve static uploaded_images folder directly
   app.use("/uploaded_images", express.static(uploadsDir));
 
