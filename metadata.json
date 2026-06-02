@@ -1,0 +1,6 @@
+{
+  "name": "Minimalist E-Commerce & Admin",
+  "description": "A minimalist white-themed e-commerce store paired with a robust real-time administrator cockpit to manage stock, analyze transactions, track customers, and review orders.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
