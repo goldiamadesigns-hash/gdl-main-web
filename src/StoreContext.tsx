@@ -553,7 +553,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const loadState = async () => {
       // First, fetch the global database preference and cache status from the Node server
       try {
-        const prefRes = await fetch('/api/database-provider');
+        const prefRes = await fetch(`/api/database-provider?t=${Date.now()}`);
         const prefData = await prefRes.json();
         if (prefData && prefData.success) {
           localStorage.setItem('min_eco_active_db_provider', prefData.provider || 'local-json');
@@ -565,7 +565,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       // First, fetch centralized configuration keys from backend to update caching dynamically
       try {
-        const res = await fetch('/api/store-state');
+        const res = await fetch(`/api/store-state?t=${Date.now()}`);
         const result = await res.json();
         if (result && result.success && result.data && Object.keys(result.data).length > 0) {
           console.log('[StoreContext] Loaded active store state from Node.js backend. Bypassing client-side caching.');
@@ -862,10 +862,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             item.setter(cloudVal);
             localStorage.setItem(item.key, JSON.stringify(cloudVal));
           } else {
-            // Seed cloud database with currently resolved local state so we don't start with blank lists
+            // ONLY seed/write to cloud database if the user is verified to be an active admin
+            const isLocalAdmin = localStorage.getItem('min_eco_admin_login') === 'true';
             const localData = item.fallback();
-            await writeStateToSupabase(item.key, localData);
-            console.log(`[SupabaseSync] Seeded cloud database for key "${item.key}".`);
+            if (isLocalAdmin) {
+              await writeStateToSupabase(item.key, localData);
+              console.log(`[SupabaseSync] Admin seeded cloud database for key "${item.key}".`);
+            } else {
+              item.setter(localData);
+              console.log(`[SupabaseSync] Guest client used initial local fallback for key "${item.key}" without writing back.`);
+            }
           }
         } catch (e) {
           console.warn(`[SupabaseSync] Direct sync fallback for key "${item.key}":`, e);

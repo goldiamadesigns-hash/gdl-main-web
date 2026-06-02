@@ -11,6 +11,15 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+  // Prevent any CDN/browser/Vercel caching of GET requests to API routes
+  app.use("/api", (req, res, next) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.setHeader("Surrogate-Control", "no-store");
+    next();
+  });
+
   // Ensure uploads directory exists on disk
   const uploadsDir = path.join(process.cwd(), "public", "uploaded_images");
   if (!fs.existsSync(uploadsDir)) {
@@ -95,11 +104,26 @@ async function startServer() {
 
   app.get("/api/database-provider", (req, res) => {
     try {
+      let data: any = { provider: 'local-json', disableLocalStorage: false };
       if (fs.existsSync(dbProviderConfigPath)) {
-        const raw = fs.readFileSync(dbProviderConfigPath, "utf-8");
-        return res.json({ success: true, ...JSON.parse(raw) });
+        try {
+          const raw = fs.readFileSync(dbProviderConfigPath, "utf-8");
+          data = JSON.parse(raw);
+        } catch (e) {}
       }
-      res.json({ success: true, provider: 'local-json', disableLocalStorage: false });
+      
+      // Environment variable fallbacks
+      const envProvider = process.env.DATABASE_PROVIDER || process.env.ACTIVE_DB_PROVIDER;
+      if (envProvider === 'local-json' || envProvider === 'supabase' || envProvider === 'mysql') {
+        data.provider = envProvider;
+      }
+      if (process.env.DISABLE_LOCALSTORAGE !== undefined) {
+        data.disableLocalStorage = process.env.DISABLE_LOCALSTORAGE === 'true';
+      } else if (process.env.DISABLE_LOCAL_STORAGE !== undefined) {
+        data.disableLocalStorage = process.env.DISABLE_LOCAL_STORAGE === 'true';
+      }
+
+      return res.json({ success: true, ...data });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }
@@ -119,23 +143,31 @@ async function startServer() {
 
   app.get("/api/mysql-config", (req, res) => {
     try {
+      let parsed: any = {};
       if (fs.existsSync(mysqlConfigPath)) {
-        const raw = fs.readFileSync(mysqlConfigPath, "utf-8");
-        const parsed = JSON.parse(raw);
-        return res.json({
-          success: true,
-          host: parsed.host || "",
-          port: parsed.port || "3306",
-          user: parsed.user || "",
-          password: parsed.password || "",
-          database: parsed.database || "",
-          table: parsed.table || "goldiama_store",
-          ssl: parsed.ssl || "false"
-        });
+        try {
+          const raw = fs.readFileSync(mysqlConfigPath, "utf-8");
+          parsed = JSON.parse(raw);
+        } catch (e) {}
       }
-      res.json({
-        success: false,
-        message: "No shared MySQL configuration found on server."
+
+      const host = parsed.host || process.env.MYSQL_HOST || "";
+      const port = parsed.port || process.env.MYSQL_PORT || "3306";
+      const user = parsed.user || process.env.MYSQL_USER || "";
+      const password = parsed.password || process.env.MYSQL_PASSWORD || "";
+      const database = parsed.database || process.env.MYSQL_DATABASE || "";
+      const table = parsed.table || process.env.MYSQL_TABLE || "goldiama_store";
+      const ssl = parsed.ssl || process.env.MYSQL_SSL || "false";
+
+      return res.json({
+        success: true,
+        host,
+        port,
+        user,
+        password,
+        database,
+        table,
+        ssl
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -211,20 +243,27 @@ async function startServer() {
 
   app.get("/api/supabase-config", (req, res) => {
     try {
+      let parsed: any = {};
       if (fs.existsSync(configPath)) {
-        const raw = fs.readFileSync(configPath, "utf-8");
-        const parsed = JSON.parse(raw);
-        return res.json({
-          success: true,
-          url: parsed.url || "",
-          anonKey: parsed.anonKey || "",
-          bucketName: parsed.bucketName || "goldiama-bucket",
-          databaseSchema: parsed.databaseSchema || "public"
-        });
+        try {
+          const raw = fs.readFileSync(configPath, "utf-8");
+          parsed = JSON.parse(raw);
+        } catch (e) {}
       }
-      res.json({
-        success: false,
-        message: "No shared configuration found on server."
+
+      const url = parsed.url || process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+      const anonKey = parsed.anonKey || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
+      const bucketName = parsed.bucketName || process.env.SUPABASE_BUCKET_NAME || "goldiama-bucket";
+      const databaseSchema = parsed.databaseSchema || process.env.SUPABASE_DATABASE_SCHEMA || "public";
+      const serviceRoleKey = parsed.serviceRoleKey || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+
+      return res.json({
+        success: true,
+        url,
+        anonKey,
+        serviceRoleKey,
+        bucketName,
+        databaseSchema
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -575,18 +614,31 @@ async function startServer() {
 
   // Helper to fetch current active DB provider
   function getActiveDbProvider(): { provider: string; disableLocalStorage: boolean } {
+    let provider = "local-json";
+    let disableLocalStorage = false;
+
     try {
       if (fs.existsSync(dbProviderConfigPath)) {
         const config = JSON.parse(fs.readFileSync(dbProviderConfigPath, "utf-8"));
-        return {
-          provider: config.provider || "local-json",
-          disableLocalStorage: !!config.disableLocalStorage
-        };
+        provider = config.provider || "local-json";
+        disableLocalStorage = !!config.disableLocalStorage;
       }
     } catch (e) {
       console.warn("Error reading db_provider_config.json:", e);
     }
-    return { provider: "local-json", disableLocalStorage: false };
+
+    // Environment variable overrides
+    const envProvider = process.env.DATABASE_PROVIDER || process.env.ACTIVE_DB_PROVIDER;
+    if (envProvider === 'local-json' || envProvider === 'supabase' || envProvider === 'mysql') {
+      provider = envProvider;
+    }
+    if (process.env.DISABLE_LOCALSTORAGE !== undefined) {
+      disableLocalStorage = process.env.DISABLE_LOCALSTORAGE === 'true';
+    } else if (process.env.DISABLE_LOCAL_STORAGE !== undefined) {
+      disableLocalStorage = process.env.DISABLE_LOCAL_STORAGE === 'true';
+    }
+
+    return { provider, disableLocalStorage };
   }
 
   app.get("/api/store-state", async (req, res) => {
@@ -602,83 +654,99 @@ async function startServer() {
 
     if (provider === "mysql") {
       try {
+        let config: any = {};
         if (fs.existsSync(mysqlConfigPath)) {
-          const config = JSON.parse(fs.readFileSync(mysqlConfigPath, "utf-8"));
-          if (config.host && config.user && config.database) {
-            const mysqlPromise = await import("mysql2/promise");
-            const connection = await mysqlPromise.createConnection({
-              host: config.host,
-              port: Number(config.port) || 3306,
-              user: config.user,
-              password: config.password,
-              database: config.database,
-              ssl: config.ssl === "true" ? { rejectUnauthorized: false } : undefined,
-              connectTimeout: 5000,
-            });
+          config = JSON.parse(fs.readFileSync(mysqlConfigPath, "utf-8"));
+        }
+        
+        const host = config.host || process.env.MYSQL_HOST || "";
+        const port = config.port || process.env.MYSQL_PORT || "3306";
+        const user = config.user || process.env.MYSQL_USER || "";
+        const password = config.password || process.env.MYSQL_PASSWORD || "";
+        const database = config.database || process.env.MYSQL_DATABASE || "";
+        const table = config.table || process.env.MYSQL_TABLE || "goldiama_store";
+        const ssl = config.ssl || process.env.MYSQL_SSL || "false";
 
-            const targetTable = config.table || "goldiama_store";
-            // Check if table exists, create if not
-            await connection.query(`
-              CREATE TABLE IF NOT EXISTS \`${targetTable}\` (
-                \`key\` VARCHAR(255) PRIMARY KEY,
-                \`value\` LONGTEXT,
-                \`updated_at\` VARCHAR(255)
-              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-            `);
+        if (host && user && database) {
+          const mysqlPromise = await import("mysql2/promise");
+          const connection = await mysqlPromise.createConnection({
+            host: host,
+            port: Number(port) || 3306,
+            user: user,
+            password: password,
+            database: database,
+            ssl: ssl === "true" || ssl === true ? { rejectUnauthorized: false } : undefined,
+            connectTimeout: 5000,
+          });
 
-            const [rows]: any = await connection.query(`SELECT \`key\`, \`value\` FROM \`${targetTable}\``);
-            await connection.end();
+          const targetTable = table || "goldiama_store";
+          // Check if table exists, create if not
+          await connection.query(`
+            CREATE TABLE IF NOT EXISTS \`${targetTable}\` (
+              \`key\` VARCHAR(255) PRIMARY KEY,
+              \`value\` LONGTEXT,
+              \`updated_at\` VARCHAR(255)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+          `);
 
-            const mergedData: Record<string, any> = {};
-            if (Array.isArray(rows)) {
-              for (const r of rows) {
-                let parsedVal = r.value;
-                try {
-                  parsedVal = JSON.parse(r.value);
-                } catch (e) {
-                  // Keep as raw string if JSON parsing falls through
-                }
-                mergedData[r.key] = parsedVal;
+          const [rows]: any = await connection.query(`SELECT \`key\`, \`value\` FROM \`${targetTable}\``);
+          await connection.end();
+
+          const mergedData: Record<string, any> = {};
+          if (Array.isArray(rows)) {
+            for (const r of rows) {
+              let parsedVal = r.value;
+              try {
+                parsedVal = JSON.parse(r.value);
+              } catch (e) {
+                // Keep as raw string if JSON parsing falls through
               }
+              mergedData[r.key] = parsedVal;
             }
-
-            console.log(`[StoreStateEngine] Loaded ${Object.keys(mergedData).length} state items from MySQL database.`);
-            return res.json({ success: true, data: mergedData, source: "mysql" });
           }
+
+          console.log(`[StoreStateEngine] Loaded ${Object.keys(mergedData).length} state items from MySQL database.`);
+          return res.json({ success: true, data: mergedData, source: "mysql" });
         }
       } catch (mysqlErr: any) {
         console.warn("[StoreStateEngine] MySQL fetch fallback triggered:", mysqlErr.message);
       }
     } else if (provider === "supabase") {
       try {
+        let config: any = {};
         if (fs.existsSync(configPath)) {
-          const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-          if (config.url && config.anonKey) {
-            const keyToUse = config.serviceRoleKey || config.anonKey;
-            const endpoint = `${config.url.trim().replace(/\/$/, "")}/rest/v1/goldiama_store?select=key,value`;
-            
-            const response = await fetch(endpoint, {
-              method: 'GET',
-              headers: {
-                'apikey': keyToUse,
-                'Authorization': `Bearer ${keyToUse}`,
-                'Accept': 'application/json'
-              }
-            });
+          config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        }
 
-            if (response.ok) {
-              const rows: any = await response.json();
-              const mergedData: Record<string, any> = {};
-              if (Array.isArray(rows)) {
-                for (const r of rows) {
-                  mergedData[r.key] = r.value;
-                }
-              }
-              console.log(`[StoreStateEngine] Loaded ${Object.keys(mergedData).length} state items from Supabase database.`);
-              return res.json({ success: true, data: mergedData, source: "supabase" });
-            } else {
-              console.warn(`[StoreStateEngine] Supabase fetch responded with status ${response.status}`);
+        const url = config.url || process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+        const anonKey = config.anonKey || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
+        const serviceRoleKey = config.serviceRoleKey || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+
+        if (url && anonKey) {
+          const keyToUse = serviceRoleKey || anonKey;
+          const endpoint = `${url.trim().replace(/\/$/, "")}/rest/v1/goldiama_store?select=key,value`;
+          
+          const response = await fetch(endpoint, {
+            method: 'GET',
+            headers: {
+              'apikey': keyToUse,
+              'Authorization': `Bearer ${keyToUse}`,
+              'Accept': 'application/json'
             }
+          });
+
+          if (response.ok) {
+            const rows: any = await response.json();
+            const mergedData: Record<string, any> = {};
+            if (Array.isArray(rows)) {
+              for (const r of rows) {
+                mergedData[r.key] = r.value;
+              }
+            }
+            console.log(`[StoreStateEngine] Loaded ${Object.keys(mergedData).length} state items from Supabase database.`);
+            return res.json({ success: true, data: mergedData, source: "supabase" });
+          } else {
+            console.warn(`[StoreStateEngine] Supabase fetch responded with status ${response.status}`);
           }
         }
       } catch (supabaseErr: any) {
@@ -707,90 +775,110 @@ async function startServer() {
         }
       }
       currentData[key] = value;
-      fs.writeFileSync(storeStatePath, JSON.stringify(currentData, null, 2), "utf-8");
+      try {
+        fs.writeFileSync(storeStatePath, JSON.stringify(currentData, null, 2), "utf-8");
+      } catch (writeErr) {
+        // Safe skip if readonly filesystem, common in Vercel Serverless
+      }
 
       const { provider } = getActiveDbProvider();
 
       if (provider === "mysql") {
         try {
+          let config: any = {};
           if (fs.existsSync(mysqlConfigPath)) {
-            const config = JSON.parse(fs.readFileSync(mysqlConfigPath, "utf-8"));
-            if (config.host && config.user && config.database) {
-              const mysqlPromise = await import("mysql2/promise");
-              const connection = await mysqlPromise.createConnection({
-                host: config.host,
-                port: Number(config.port) || 3306,
-                user: config.user,
-                password: config.password,
-                database: config.database,
-                ssl: config.ssl === "true" ? { rejectUnauthorized: false } : undefined,
-                connectTimeout: 5000,
-              });
+            config = JSON.parse(fs.readFileSync(mysqlConfigPath, "utf-8"));
+          }
 
-              const targetTable = config.table || "goldiama_store";
-              const strValue = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value);
-              const nowIso = new Date().toISOString();
+          const host = config.host || process.env.MYSQL_HOST || "";
+          const port = config.port || process.env.MYSQL_PORT || "3306";
+          const user = config.user || process.env.MYSQL_USER || "";
+          const password = config.password || process.env.MYSQL_PASSWORD || "";
+          const database = config.database || process.env.MYSQL_DATABASE || "";
+          const table = config.table || process.env.MYSQL_TABLE || "goldiama_store";
+          const ssl = config.ssl || process.env.MYSQL_SSL || "false";
 
-              await connection.query(`
-                INSERT INTO \`${targetTable}\` (\`key\`, \`value\`, \`updated_at\`)
-                VALUES (?, ?, ?)
-                ON DUPLICATE KEY UPDATE \`value\` = VALUES(\`value\`), \`updated_at\` = VALUES(\`updated_at\`);
-              `, [key, strValue, nowIso]);
+          if (host && user && database) {
+            const mysqlPromise = await import("mysql2/promise");
+            const connection = await mysqlPromise.createConnection({
+              host: host,
+              port: Number(port) || 3306,
+              user: user,
+              password: password,
+              database: database,
+              ssl: ssl === "true" || ssl === true ? { rejectUnauthorized: false } : undefined,
+              connectTimeout: 5000,
+            });
 
-              await connection.end();
-              // Return early successfully
-              return res.json({ 
-                success: true, 
-                message: `State [${key}] saved both locally & live to MySQL database.` 
-              });
-            }
+            const targetTable = table || "goldiama_store";
+            const strValue = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value);
+            const nowIso = new Date().toISOString();
+
+            await connection.query(`
+              INSERT INTO \`${targetTable}\` (\`key\`, \`value\`, \`updated_at\`)
+              VALUES (?, ?, ?)
+              ON DUPLICATE KEY UPDATE \`value\` = VALUES(\`value\`), \`updated_at\` = VALUES(\`updated_at\`);
+            `, [key, strValue, nowIso]);
+
+            await connection.end();
+            // Return early successfully
+            return res.json({ 
+              success: true, 
+              message: `State [${key}] saved both locally & live to MySQL database.` 
+            });
           }
         } catch (mysqlErr: any) {
           console.warn("[StoreStateEngine] Saving to MySQL failed:", mysqlErr.message);
         }
       } else if (provider === "supabase") {
         try {
+          let config: any = {};
           if (fs.existsSync(configPath)) {
-            const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-            if (config.url && config.anonKey) {
-              const keyToUse = config.serviceRoleKey || config.anonKey;
-              const endpoint = `${config.url.trim().replace(/\/$/, "")}/rest/v1/goldiama_store`;
+            config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+          }
 
-              const response = await fetch(endpoint, {
-                method: 'POST',
+          const url = config.url || process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+          const anonKey = config.anonKey || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
+          const serviceRoleKey = config.serviceRoleKey || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+
+          if (url && anonKey) {
+            const keyToUse = serviceRoleKey || anonKey;
+            const endpoint = `${url.trim().replace(/\/$/, "")}/rest/v1/goldiama_store`;
+
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers: {
+                'apikey': keyToUse,
+                'Authorization': `Bearer ${keyToUse}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'resolution=merge-duplicates, return=representation'
+              },
+              body: JSON.stringify({
+                key,
+                value,
+                updated_at: new Date().toISOString()
+              })
+            });
+
+            if (!response.ok) {
+              // Fallback direct PATCH lookup
+              await fetch(`${endpoint}?key=eq.${key}`, {
+                method: 'PATCH',
                 headers: {
                   'apikey': keyToUse,
                   'Authorization': `Bearer ${keyToUse}`,
-                  'Content-Type': 'application/json',
-                  'Prefer': 'resolution=merge-duplicates, return=representation'
+                  'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                  key,
                   value,
                   updated_at: new Date().toISOString()
                 })
               });
-
-              if (!response.ok) {
-                // Fallback direct PATCH lookup
-                await fetch(`${endpoint}?key=eq.${key}`, {
-                  method: 'PATCH',
-                  headers: {
-                    'apikey': keyToUse,
-                    'Authorization': `Bearer ${keyToUse}`,
-                    'Content-Type': 'application/json'
-                  },
-                  body: JSON.stringify({
-                    value,
-                    updated_at: new Date().toISOString()
-                  })
-                });
-              }
-              return res.json({ 
-                success: true, 
-                message: `State [${key}] saved both locally & live to Supabase.` 
-              });
             }
+            return res.json({ 
+              success: true, 
+              message: `State [${key}] saved both locally & live to Supabase.` 
+            });
           }
         } catch (subErr: any) {
           console.warn("[StoreStateEngine] Saving to Supabase failed:", subErr.message);
